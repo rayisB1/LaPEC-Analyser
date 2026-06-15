@@ -1,0 +1,39 @@
+{
+  "ordre_colonnes": [
+    "Temps",
+    "V.E.",
+    "VO2",
+    "VCO2",
+    "Q.R.",
+    "Eq O2",
+    "VE/VCO2",
+    "PetO2",
+    "PetCO2",
+    "F.R.",
+    "Vt",
+    "Rés Ven",
+    "Ti",
+    "Ttot",
+    "Ti/Ttot",
+    "Vt/Ti",
+    "FiO2",
+    "FiCO2",
+    "Réf VO2"
+  ],
+  "formats": [
+    {
+      "nom": "Machine 1",
+      "delimiteur": "¦",
+      "marqueur_header": "temps",
+      "marqueur_debut": "examen complet",
+      "regex_premiere_colonne": "^\\d{2}:\\d{2}$"
+    },
+    {
+      "nom": "Machine 2",
+      "delimiteur": "¦",
+      "marqueur_header": "time",
+      "marqueur_debut": "",
+      "regex_premiere_colonne": "^\\d{2}:\\d{2}$"
+    }
+  ]
+}
