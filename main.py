@@ -6,6 +6,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt
 from src.ui.page_import import PageImport
+from src.ui.page_filtrage import PageFiltrage
 from src.ui.page_parametres import PageParametres
 from src.ui.page_visualiser import PageVisualiser
 
@@ -38,10 +39,11 @@ class MainWindow(QMainWindow):
 
         self.nav_buttons = []
         nav_items = [
-            ("📂  Importer", 0),
-            ("📈  Visualiser", 1),
-            ("⚙️  Paramètres", 2),
-            ("📊  Résumé", 3),
+            ("Importer", 0),
+            ("Visualiser", 1),
+            ("Filtrage et Moyenne", 2),
+            ("Paramètres", 3),
+            ("Résumé", 4),
         ]
 
         for label, index in nav_items:
@@ -75,11 +77,12 @@ class MainWindow(QMainWindow):
 
         # Pages
         self.stack = QStackedWidget()
-        self.stack.setStyleSheet("background-color: #f5f5f5;")
+        self.stack.setStyleSheet("background-color: #f5f5f5; color: #2b2d3b;")
 
         self.page_import = PageImport()
         self.stack.addWidget(self.page_import)
         self.stack.addWidget(PageVisualiser(self.page_import.fichiers))
+        self.stack.addWidget(PageFiltrage(self.page_import.fichiers))
         self.stack.addWidget(PageParametres())
         self.stack.addWidget(self._make_page("📊 Feuille de résumé"))
 

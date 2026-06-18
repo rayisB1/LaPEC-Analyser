@@ -6,6 +6,11 @@ import json
 
 CONFIG_PATH = Path("config.json")
 
+
+def _clean_text(txt: str) -> str:
+    """Même nettoyage que CleanText() du VBA : supprime chr(160) et 'Â'."""
+    return txt.replace("Â", "").replace("\xa0", "").strip()
+
 COLONNES_DEFAUT = [
     'Temps', 'V.E.', 'VO2', 'VCO2', 'Q.R.', 'Eq O2',
     'VE/VCO2', 'PetO2', 'PetCO2', 'F.R.', 'Vt', 'Rés Ven',
@@ -88,7 +93,7 @@ def _parse_lines(lines: list, fmt: dict) -> pd.DataFrame:
     if header_line is None:
         raise ValueError(f"Impossible de trouver l'en-tête (marqueur='{marqueur_header}', délimiteur='{delimiteur}')")
 
-    headers = [h.strip() for h in header_line.split(delimiteur) if h.strip()]
+    headers = [_clean_text(h) for h in header_line.split(delimiteur) if _clean_text(h)]
 
     # Trouver le début des données
     start_index = None

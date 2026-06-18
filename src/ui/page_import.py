@@ -50,8 +50,18 @@ class PageImport(QWidget):
         self.liste.currentItemChanged.connect(self._afficher_apercu)
         left.addWidget(self.liste)
 
-        btn_suppr = QPushButton("Supprimer")
-        btn_suppr.setStyleSheet("padding: 6px 12px;")
+        btn_suppr = QPushButton("Supprimer le fichier")
+        btn_suppr.setStyleSheet("""
+            QPushButton {
+                background-color: #e05c3a;
+                color: white;
+                border: none;
+                padding: 8px 16px;
+                border-radius: 6px;
+                font-size: 13px;
+            }
+            QPushButton:hover { background-color: #c44e30; }
+        """)
         btn_suppr.clicked.connect(self._supprimer)
         left.addWidget(btn_suppr)
 
@@ -63,10 +73,10 @@ class PageImport(QWidget):
         right.addWidget(self.label_apercu)
         self.table = QTableWidget()
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        header = self.table.horizontalHeader()
-        header.setSectionsMovable(True)
-        header.setDragDropMode(QTableWidget.DragDropMode.InternalMove)
-        header.setStyleSheet("""
+        self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.table.setStyleSheet("""
+            QTableWidget { color: #2b2d3b; background-color: white; }
+            QTableWidget::item:selected { background-color: #c8d8f8; color: #2b2d3b; }
             QHeaderView::section {
                 background-color: #e8eaf0;
                 color: #2b2d3b;
@@ -76,10 +86,10 @@ class PageImport(QWidget):
                 font-weight: bold;
                 font-size: 12px;
             }
-            QHeaderView::section:hover {
-                background-color: #d0d5e8;
-            }
+            QHeaderView::section:hover { background-color: #d0d5e8; }
         """)
+        header = self.table.horizontalHeader()
+        header.setSectionsMovable(True)
         right.addWidget(self.table)
         content.addLayout(right)
 
