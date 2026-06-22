@@ -11,8 +11,7 @@ DEFAUTS = {
 }
 
 COL_VE = "V.E."
-COL_QR = "Q.R."       # utilisé dans le filtre disc (colonne E VBA), pas Ti/Ttot
-COL_TITOT = "Ti/Ttot" # utilisé dans le filtre seuils seulement
+COL_TITOT = "Ti/Ttot"
 COL_VT = "Vt"
 COL_TEMPS = "Temps"
 
@@ -38,8 +37,8 @@ def appliquer_filtre_discontinuite(
     criterions = []
     if COL_VE in result.columns:
         criterions.append((COL_VE, disc_VE))
-    if COL_QR in result.columns:
-        criterions.append((COL_QR, disc_TiTot))
+    if COL_TITOT in result.columns:
+        criterions.append((COL_TITOT, disc_TiTot))
     if COL_VT in result.columns:
         criterions.append((COL_VT, disc_Vt))
 

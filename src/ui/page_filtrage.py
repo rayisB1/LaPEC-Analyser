@@ -1,15 +1,21 @@
+import pandas as pd
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QScrollArea,
     QPushButton, QComboBox, QDoubleSpinBox, QGroupBox, QFormLayout,
-    QFrame, QTabWidget,
+    QFrame, QTabWidget, QSizePolicy,
 )
 from PyQt6.QtCore import Qt
+from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
+from matplotlib.figure import Figure
+import matplotlib.ticker as ticker
+from PyQt6.QtWidgets import QTableWidget, QTableWidgetItem, QHeaderView
+from src.moyennes import calculer_moyennes, COLS_MOYENNE
 from src.filters import (
     appliquer_filtre_discontinuite,
     appliquer_filtre_seuils,
     compter_lignes_valides,
     DEFAUTS,
-    COL_VE, COL_QR, COL_TITOT, COL_VT,
+    COL_VE, COL_TITOT, COL_VT,
 )
 
 
@@ -44,6 +50,7 @@ class PageFiltrage(QWidget):
         self.tabs.setStyleSheet(self._style_tabs())
         self.tabs.addTab(self._build_tab_filtrage(), "Filtrage")
         self.tabs.addTab(self._build_tab_moyenne(), "Moyenne")
+        self.tabs.currentChanged.connect(self._on_tab_change)
         outer.addWidget(self.tabs)
 
     def _build_tab_filtrage(self) -> QWidget:
@@ -85,9 +92,9 @@ class PageFiltrage(QWidget):
         self.spin_disc_TiTot = self._spinbox(DEFAUTS["disc_TiTot"], 0.0, 99.0, 3)
         self.spin_disc_Vt = self._spinbox(DEFAUTS["disc_Vt"], 0.0, 99.0, 3)
 
-        form_disc.addRow(self._lbl(f"Seuil VE  ({COL_VE}) :"), self.spin_disc_VE)
-        form_disc.addRow(self._lbl(f"Seuil Q.R.  ({COL_QR}) :"), self.spin_disc_TiTot)
-        form_disc.addRow(self._lbl(f"Seuil Vt  ({COL_VT}) :"), self.spin_disc_Vt)
+        form_disc.addRow(self._lbl(f"VE  ({COL_VE}) :"), self.spin_disc_VE)
+        form_disc.addRow(self._lbl(f"Ti/Ttot  ({COL_TITOT}) :"), self.spin_disc_TiTot)
+        form_disc.addRow(self._lbl(f"Vt  ({COL_VT}) :"), self.spin_disc_Vt)
         layout.addWidget(grp_disc)
 
         # ── Paramètres seuils ─────────────────────────────────────────────────
@@ -176,17 +183,72 @@ class PageFiltrage(QWidget):
         scroll.setWidget(container)
         layout = QVBoxLayout(container)
         layout.setContentsMargins(32, 24, 32, 32)
-        layout.setSpacing(16)
+        layout.setSpacing(12)
 
-        lbl = QLabel("Moyenne")
-        lbl.setStyleSheet("font-size: 16px; font-weight: bold; color: #2b2d3b;")
-        layout.addWidget(lbl)
+        # Sélecteur de fichier
+        row_fichier = QHBoxLayout()
+        row_fichier.addWidget(self._lbl("Fichier :"))
+        self.combo_moy = QComboBox()
+        self.combo_moy.setMinimumWidth(300)
+        self.combo_moy.setStyleSheet(self._style_combo())
+        self.combo_moy.currentIndexChanged.connect(self._tracer_moyenne)
+        row_fichier.addWidget(self.combo_moy)
+        row_fichier.addStretch()
+        layout.addLayout(row_fichier)
 
-        placeholder = QLabel("Le calcul de moyennes sera disponible ici.")
-        placeholder.setStyleSheet("font-size: 13px; color: #888;")
-        layout.addWidget(placeholder)
+        # Figure matplotlib (hauteur fixe pour laisser place au tableau)
+        self.fig_moy = Figure(figsize=(10, 4.5), facecolor="#f5f5f5")
+        self.ax_vo2 = self.fig_moy.add_subplot(111)
+        self.ax_qr = self.ax_vo2.twinx()
+        self.canvas_moy = FigureCanvas(self.fig_moy)
+        self.canvas_moy.setFixedHeight(400)
+        self.canvas_moy.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        layout.addWidget(self.canvas_moy)
 
+        btn_reset = QPushButton("Vue initiale")
+        btn_reset.setFixedWidth(110)
+        btn_reset.setStyleSheet(self._style_btn_secondary())
+        btn_reset.clicked.connect(self._reset_vue_moyenne)
+        layout.addWidget(btn_reset, alignment=Qt.AlignmentFlag.AlignRight)
+
+        self.canvas_moy.mpl_connect("scroll_event", self._on_scroll_moy)
+
+        layout.addWidget(self._separateur())
+
+        # Titre section moyennes
+        lbl_moy = QLabel("Moyennes par période")
+        lbl_moy.setStyleSheet("font-size: 15px; font-weight: bold; color: #2b2d3b;")
+        layout.addWidget(lbl_moy)
+
+        # Info : FR, nb cycles, plages
+        self.lbl_moy_info = QLabel("—")
+        self.lbl_moy_info.setStyleSheet(
+            "font-size: 12px; color: #555; font-family: monospace; padding: 4px 0;"
+        )
+        self.lbl_moy_info.setWordWrap(True)
+        layout.addWidget(self.lbl_moy_info)
+
+        # Tableau des résultats
+        self.table_moy = QTableWidget()
+        self.table_moy.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.table_moy.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.table_moy.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        self.table_moy.setMinimumHeight(110)
+        self.table_moy.setMaximumHeight(160)
+        self.table_moy.setStyleSheet("""
+            QTableWidget { color: #2b2d3b; background-color: white;
+                           border: 1px solid #ddd; border-radius: 4px; }
+            QTableWidget::item:selected { background-color: #c8d8f8; color: #2b2d3b; }
+            QHeaderView::section {
+                background-color: #e8eaf0; color: #2b2d3b;
+                padding: 4px 8px; border: none;
+                border-right: 1px solid #ccc; font-weight: bold; font-size: 11px;
+            }
+        """)
+        layout.addWidget(self.table_moy)
         layout.addStretch()
+
+        self._style_axes_moyenne()
         return scroll
 
     # ── Événements ─────────────────────────────────────────────────────────────
@@ -201,15 +263,20 @@ class PageFiltrage(QWidget):
                 del self._originaux[nom]
                 self._compteurs.pop(nom, None)
 
-        current = self.combo.currentText()
-        self.combo.blockSignals(True)
-        self.combo.clear()
-        for nom in self.fichiers:
-            self.combo.addItem(nom)
-        idx = self.combo.findText(current)
-        self.combo.setCurrentIndex(idx if idx >= 0 else 0)
-        self.combo.blockSignals(False)
+        for combo, signal in [(self.combo, self._on_fichier_change),
+                               (self.combo_moy, self._tracer_moyenne)]:
+            current = combo.currentText()
+            combo.blockSignals(True)
+            combo.clear()
+            for nom in self.fichiers:
+                combo.addItem(nom)
+            idx = combo.findText(current)
+            combo.setCurrentIndex(idx if idx >= 0 else 0)
+            combo.blockSignals(False)
+
         self._on_fichier_change()
+        if self.tabs.currentIndex() == 1:
+            self._tracer_moyenne()
 
     def _on_fichier_change(self):
         nom = self.combo.currentText()
@@ -316,6 +383,215 @@ class PageFiltrage(QWidget):
             )
         else:
             self.lbl_apres_seuils.setText("Après filtre seuils         :  —  (non appliqué)")
+
+    # ── Graphique Moyenne ──────────────────────────────────────────────────────
+
+    def _on_tab_change(self, index: int):
+        if index == 1:
+            self._tracer_moyenne()
+
+    def _tracer_moyenne(self):
+        nom = self.combo_moy.currentText()
+        df = self.fichiers.get(nom)
+
+        self.ax_vo2.clear()
+        self.ax_qr.clear()
+
+        res = None
+        if df is not None and not df.empty:
+            x = self._temps_en_secondes_moy(df)
+            res = calculer_moyennes(df)
+
+            def _fmt_t(v, _):
+                v = int(v)
+                h, rem = divmod(v, 3600)
+                m, s = divmod(rem, 60)
+                return f"{h:02d}:{m:02d}:{s:02d}" if h else f"{m:02d}:{s:02d}"
+
+            def _x_at(idx):
+                idx = max(0, min(idx, len(x) - 1))
+                if x[idx] is not None:
+                    return x[idx]
+                for d in range(1, 10):
+                    for i in (idx + d, idx - d):
+                        if 0 <= i < len(x) and x[i] is not None:
+                            return x[i]
+                return None
+
+            # Zones colorées des périodes (tracées en fond, zorder=0)
+            if res:
+                SPANS = [
+                    ("Dernières 4'",  res['last4'],         '#4f8ef7'),
+                    ("Stable VO2",    res.get('stable_vo2'),   '#27ae60'),
+                    ("Stable PetO2",  res.get('stable_peto2'), '#f39c12'),
+                ]
+                for label, periode, color in SPANS:
+                    if periode is None:
+                        continue
+                    x1 = _x_at(periode['debut'])
+                    x2 = _x_at(periode['fin'] - 1)
+                    if x1 is not None and x2 is not None and x2 > x1:
+                        self.ax_vo2.axvspan(x1, x2, alpha=0.13, color=color,
+                                            label=label, zorder=0)
+
+            # Courbes
+            if "VO2" in df.columns:
+                vo2 = pd.to_numeric(df["VO2"], errors="coerce")
+                vo2_lisse = vo2.rolling(window=11, center=True, min_periods=1).mean()
+                if len(vo2_lisse) > 10:
+                    vo2_lisse.iloc[:5] = float("nan")
+                    vo2_lisse.iloc[-5:] = float("nan")
+                vo2_lisse = vo2_lisse.round(2)
+                self.ax_vo2.plot(x, vo2,
+                                 color=(180/255, 50/255, 50/255),
+                                 linewidth=1, label="VO2", zorder=2)
+                self.ax_vo2.plot(x, vo2_lisse,
+                                 color=(180/255, 55/255, 55/255),
+                                 linewidth=2, label="VO2 lissé", zorder=2)
+
+            if "Q.R." in df.columns:
+                qr = pd.to_numeric(df["Q.R."], errors="coerce")
+                self.ax_qr.plot(x, qr,
+                                color=(255/255, 90/255, 172/255),
+                                linewidth=1, label="QR", zorder=2)
+
+            self.ax_vo2.xaxis.set_major_formatter(ticker.FuncFormatter(_fmt_t))
+            self.ax_vo2.xaxis.set_major_locator(ticker.MaxNLocator(nbins=10, integer=True))
+            self.ax_vo2.tick_params(axis="x", rotation=30, labelsize=8)
+
+            lines1, labels1 = self.ax_vo2.get_legend_handles_labels()
+            lines2, labels2 = self.ax_qr.get_legend_handles_labels()
+            self.ax_vo2.legend(lines1 + lines2, labels1 + labels2,
+                               fontsize=9, loc="upper center",
+                               bbox_to_anchor=(0.5, -0.22), ncol=3,
+                               framealpha=0.9, edgecolor="#dddddd")
+
+        self._style_axes_moyenne()
+        self.canvas_moy.draw()
+        self._mettre_a_jour_tableau_moyennes(res)
+
+    def _mettre_a_jour_tableau_moyennes(self, res=None):
+        nom = self.combo_moy.currentText()
+        df = self.fichiers.get(nom)
+
+        self.table_moy.clear()
+        self.table_moy.setRowCount(0)
+
+        if df is None or df.empty:
+            self.lbl_moy_info.setText("—")
+            return
+
+        if res is None:
+            res = calculer_moyennes(df)
+        if res is None:
+            self.lbl_moy_info.setText("Impossible de calculer (colonne F.R. manquante).")
+            return
+
+        # Info textuelle
+        def _temps(idx):
+            try:
+                return str(df["Temps"].iloc[idx]) if "Temps" in df.columns else str(idx)
+            except Exception:
+                return str(idx)
+
+        info_lines = [
+            f"FR moy : {res['freq_moy']} cycles/min  |  4 min ≈ {res['nb_lignes']} cycles  |  tampon 1 min ≈ {res['nb_lignes_1min']} cycles",
+            f"Dernières 4'  : lignes {res['last4']['debut']}–{res['last4']['fin']}  "
+            f"({_temps(res['last4']['debut'])} → {_temps(res['last4']['fin'] - 1)})",
+        ]
+        if res['stable_vo2']:
+            sv = res['stable_vo2']
+            info_lines.append(
+                f"Stable VO2    : lignes {sv['debut']}–{sv['fin']}  "
+                f"({_temps(sv['debut'])} → {_temps(sv['fin'] - 1)})"
+            )
+        if res['stable_peto2']:
+            sp = res['stable_peto2']
+            info_lines.append(
+                f"Stable PetO2  : lignes {sp['debut']}–{sp['fin']}  "
+                f"({_temps(sp['debut'])} → {_temps(sp['fin'] - 1)})"
+            )
+        self.lbl_moy_info.setText("\n".join(info_lines))
+
+        # Construction du tableau
+        col_headers = COLS_MOYENNE + ["CV VO2", "CV PetO2"]
+        periodes = [
+            ("Dernières 4'", res['last4']),
+            ("Stable VO2",   res['stable_vo2']),
+            ("Stable PetO2", res['stable_peto2']),
+        ]
+        periodes = [(lbl, p) for lbl, p in periodes if p is not None]
+
+        self.table_moy.setColumnCount(len(col_headers))
+        self.table_moy.setRowCount(len(periodes))
+        self.table_moy.setHorizontalHeaderLabels(col_headers)
+        self.table_moy.setVerticalHeaderLabels([lbl for lbl, _ in periodes])
+
+        for row_idx, (_, periode) in enumerate(periodes):
+            stats = periode['stats']
+            for col_idx, col in enumerate(COLS_MOYENNE):
+                val = stats.get(col)
+                txt = f"{val:.2f}" if val is not None else "—"
+                self.table_moy.setItem(row_idx, col_idx, QTableWidgetItem(txt))
+            # CV VO2
+            cv_vo2 = stats.get('cv_vo2')
+            self.table_moy.setItem(
+                row_idx, len(COLS_MOYENNE),
+                QTableWidgetItem(f"{cv_vo2:.4f}" if cv_vo2 is not None else "—")
+            )
+            # CV PetO2
+            cv_pet = stats.get('cv_peto2')
+            self.table_moy.setItem(
+                row_idx, len(COLS_MOYENNE) + 1,
+                QTableWidgetItem(f"{cv_pet:.4f}" if cv_pet is not None else "—")
+            )
+
+    def _style_axes_moyenne(self):
+        self.ax_vo2.set_facecolor("white")
+        self.ax_vo2.set_title("VO2 et QR", fontsize=12, color="#2b2d3b", pad=8)
+        self.ax_vo2.set_xlabel("Temps", fontsize=9, color="#555555")
+        self.ax_vo2.set_ylabel("VO2", fontsize=9, color=(180/255, 50/255, 50/255))
+        self.ax_vo2.set_ylim(0, 0.6)
+        self.ax_vo2.tick_params(colors="#555555", labelsize=8)
+        self.ax_vo2.grid(True, alpha=0.3, linestyle="--")
+        self.ax_qr.set_ylabel("QR", fontsize=9, color=(255/255, 90/255, 172/255))
+        self.ax_qr.yaxis.set_label_position("right")
+        self.ax_qr.set_ylim(0, 1.2)
+        self.ax_qr.tick_params(axis="y", colors=(255/255, 90/255, 172/255), labelsize=8)
+        for spine in self.ax_vo2.spines.values():
+            spine.set_edgecolor("#dddddd")
+        self.fig_moy.tight_layout(rect=[0, 0.12, 1, 1.0])
+
+    def _reset_vue_moyenne(self):
+        self.ax_vo2.autoscale(axis="x")
+        self.ax_vo2.set_ylim(0, 0.6)
+        self.ax_qr.set_ylim(0, 1.2)
+        self.canvas_moy.draw_idle()
+
+    def _on_scroll_moy(self, event):
+        ax = event.inaxes
+        if ax not in (self.ax_vo2, self.ax_qr) or event.xdata is None:
+            return
+        factor = 0.75 if event.button == "up" else 1.33
+        lo, hi = self.ax_vo2.get_xlim()
+        pivot = event.xdata
+        self.ax_vo2.set_xlim([pivot + (v - pivot) * factor for v in (lo, hi)])
+        self.canvas_moy.draw_idle()
+
+    def _temps_en_secondes_moy(self, df) -> list:
+        result = []
+        for v in df["Temps"]:
+            try:
+                parts = str(v).split(":")
+                if len(parts) == 3:
+                    h, m, s = parts
+                    result.append(int(h) * 3600 + int(m) * 60 + int(s))
+                else:
+                    m, s = parts
+                    result.append(int(m) * 60 + int(s))
+            except Exception:
+                result.append(None)
+        return result
 
     # ── Helpers UI ─────────────────────────────────────────────────────────────
 
