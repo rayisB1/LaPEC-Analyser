@@ -4,7 +4,7 @@ from PyQt6.QtWidgets import (
     QPushButton, QComboBox, QDoubleSpinBox, QGroupBox, QFormLayout,
     QFrame, QTabWidget, QSizePolicy,
 )
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QTimer
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 import matplotlib.ticker as ticker
@@ -13,18 +13,109 @@ from src.moyennes import calculer_moyennes, COLS_MOYENNE
 from src.filters import (
     appliquer_filtre_discontinuite,
     appliquer_filtre_seuils,
+    appliquer_filtres_additionnels,
     compter_lignes_valides,
     DEFAUTS,
-    COL_VE, COL_TITOT, COL_VT,
+    COL_VE, COL_TITOT, COL_VT, COL_TEMPS,
 )
 
 
+class FiltreLigneWidget(QWidget):
+    """Un filtre personnalisé : colonne + type (disc ou seuil) + paramètres."""
+
+    def __init__(self, colonnes: list, on_remove, parent=None):
+        super().__init__(parent)
+        row = QHBoxLayout(self)
+        row.setContentsMargins(0, 2, 0, 2)
+        row.setSpacing(6)
+
+        self.combo_col = QComboBox()
+        self.combo_col.addItems(colonnes)
+        self.combo_col.setMinimumWidth(110)
+        row.addWidget(self.combo_col)
+
+        self.combo_type = QComboBox()
+        self.combo_type.addItems(["Valeur", "Seuils min/max"])
+        self.combo_type.setFixedWidth(120)
+        self.combo_type.currentIndexChanged.connect(self._toggle_params)
+        row.addWidget(self.combo_type)
+
+        # Params discontinuité
+        self.lbl_seuil = QLabel("valeur :")
+        self.spin_seuil = self._spin(0.0, 9999.0, 2, 1.0)
+        row.addWidget(self.lbl_seuil)
+        row.addWidget(self.spin_seuil)
+
+        # Params seuils
+        self.lbl_min = QLabel("min :")
+        self.spin_min = self._spin(-9999.0, 9999.0, 2, 0.0)
+        self.lbl_max = QLabel("max :")
+        self.spin_max = self._spin(-9999.0, 9999.0, 2, 100.0)
+        for w in (self.lbl_min, self.spin_min, self.lbl_max, self.spin_max):
+            row.addWidget(w)
+
+        for lbl in (self.lbl_seuil, self.lbl_min, self.lbl_max):
+            lbl.setStyleSheet("font-size: 12px; color: #2b2d3b;")
+
+        btn_rm = QPushButton("×")
+        btn_rm.setFixedSize(26, 26)
+        btn_rm.setStyleSheet(
+            "QPushButton{background:#e05c3a;color:white;border:none;border-radius:4px;font-size:13px;}"
+            "QPushButton:hover{background:#c44e30;}"
+        )
+        btn_rm.clicked.connect(lambda: on_remove(self))
+        row.addWidget(btn_rm)
+        row.addStretch()
+
+        self._toggle_params()
+
+    def _spin(self, min_, max_, dec, default) -> QDoubleSpinBox:
+        sb = QDoubleSpinBox()
+        sb.setMinimum(min_)
+        sb.setMaximum(max_)
+        sb.setDecimals(dec)
+        sb.setValue(default)
+        sb.setFixedWidth(88)
+        sb.setStyleSheet(
+            "QDoubleSpinBox{padding:3px 6px;border:1px solid #ccc;"
+            "border-radius:4px;font-size:12px;background:white;color:#2b2d3b;}"
+        )
+        return sb
+
+    def _toggle_params(self):
+        disc = self.combo_type.currentIndex() == 0
+        self.lbl_seuil.setVisible(disc)
+        self.spin_seuil.setVisible(disc)
+        self.lbl_min.setVisible(not disc)
+        self.spin_min.setVisible(not disc)
+        self.lbl_max.setVisible(not disc)
+        self.spin_max.setVisible(not disc)
+
+    def config(self) -> dict:
+        col = self.combo_col.currentText()
+        if self.combo_type.currentIndex() == 0:
+            return {'type': 'disc', 'col': col, 'seuil': self.spin_seuil.value()}
+        return {'type': 'seuil', 'col': col,
+                'min': self.spin_min.value(), 'max': self.spin_max.value()}
+
+    def actualiser_colonnes(self, colonnes: list):
+        cur = self.combo_col.currentText()
+        self.combo_col.blockSignals(True)
+        self.combo_col.clear()
+        self.combo_col.addItems(colonnes)
+        idx = self.combo_col.findText(cur)
+        self.combo_col.setCurrentIndex(idx if idx >= 0 else 0)
+        self.combo_col.blockSignals(False)
+
+
 class PageFiltrage(QWidget):
-    def __init__(self, fichiers: dict):
+    def __init__(self, fichiers: dict, resume_data: dict):
         super().__init__()
         self.fichiers = fichiers
+        self.resume_data = resume_data
         self._originaux: dict = {}
         self._compteurs: dict = {}
+        self._filtres_lignes: list = []
         self._build_ui()
 
     # ── Construction UI ────────────────────────────────────────────────────────
@@ -126,6 +217,23 @@ class PageFiltrage(QWidget):
         btn_defaults.clicked.connect(self._reset_defauts)
         layout.addWidget(btn_defaults)
 
+        # ── Filtres additionnels ───────────────────────────────────────────────
+        grp_add = QGroupBox("Filtres additionnels  —  sur n'importe quelle colonne")
+        grp_add.setStyleSheet(self._style_groupbox())
+        vbox_add = QVBoxLayout(grp_add)
+        vbox_add.setSpacing(4)
+
+        self._filtres_layout = QVBoxLayout()
+        self._filtres_layout.setSpacing(4)
+        vbox_add.addLayout(self._filtres_layout)
+
+        btn_ajouter = QPushButton("+ Ajouter un filtre")
+        btn_ajouter.setStyleSheet(self._style_btn_secondary())
+        btn_ajouter.setFixedWidth(180)
+        btn_ajouter.clicked.connect(self._ajouter_filtre_additionnel)
+        vbox_add.addWidget(btn_ajouter)
+        layout.addWidget(grp_add)
+
         layout.addWidget(self._separateur())
 
         # ── Boutons d'action ──────────────────────────────────────────────────
@@ -145,6 +253,12 @@ class PageFiltrage(QWidget):
         self.btn_seuils.clicked.connect(self._appliquer_seuils)
         layout.addWidget(self.btn_seuils)
 
+        self.btn_additionnels = QPushButton("Appliquer filtres additionnels")
+        self.btn_additionnels.setStyleSheet(self._style_btn_primary())
+        self.btn_additionnels.setFixedWidth(290)
+        self.btn_additionnels.clicked.connect(self._appliquer_filtres_additionnels)
+        layout.addWidget(self.btn_additionnels)
+
         layout.addWidget(self._separateur())
 
         # ── Compteurs de suivi ────────────────────────────────────────────────
@@ -163,8 +277,10 @@ class PageFiltrage(QWidget):
         self.lbl_avant = QLabel()
         self.lbl_apres_disc = QLabel()
         self.lbl_apres_seuils = QLabel()
+        self.lbl_apres_additionnel = QLabel()
         style_cpt = "font-size: 13px; color: #2b2d3b; font-family: monospace;"
-        for lbl in (self.lbl_avant, self.lbl_apres_disc, self.lbl_apres_seuils):
+        for lbl in (self.lbl_avant, self.lbl_apres_disc,
+                    self.lbl_apres_seuils, self.lbl_apres_additionnel):
             lbl.setStyleSheet(style_cpt)
             panel_layout.addWidget(lbl)
 
@@ -246,6 +362,21 @@ class PageFiltrage(QWidget):
             }
         """)
         layout.addWidget(self.table_moy)
+
+        # Envoi vers le résumé
+        row_resume = QHBoxLayout()
+        self.btn_resume = QPushButton("Résumé")
+        self.btn_resume.setStyleSheet(self._style_btn_primary())
+        self.btn_resume.setFixedWidth(160)
+        self.btn_resume.clicked.connect(self._envoyer_resume)
+        row_resume.addWidget(self.btn_resume)
+
+        self.lbl_resume_statut = QLabel("")
+        self.lbl_resume_statut.setStyleSheet("font-size: 12px; color: #27ae60;")
+        row_resume.addWidget(self.lbl_resume_statut)
+        row_resume.addStretch()
+        layout.addLayout(row_resume)
+
         layout.addStretch()
 
         self._style_axes_moyenne()
@@ -282,6 +413,7 @@ class PageFiltrage(QWidget):
         nom = self.combo.currentText()
         if nom:
             self._snapshot_si_nouveau(nom)
+        self._actualiser_colonnes_filtres()
         self._update_compteurs_labels(nom)
 
     # ── Logique de filtrage ────────────────────────────────────────────────────
@@ -294,6 +426,7 @@ class PageFiltrage(QWidget):
                 "avant": compter_lignes_valides(df),
                 "apres_disc": None,
                 "apres_seuils": None,
+                "apres_additionnel": None,
             }
 
     def _appliquer_disc(self):
@@ -336,7 +469,12 @@ class PageFiltrage(QWidget):
             return
         self.fichiers[nom] = original.copy()
         avant = self._compteurs.get(nom, {}).get("avant")
-        self._compteurs[nom] = {"avant": avant, "apres_disc": None, "apres_seuils": None}
+        self._compteurs[nom] = {
+            "avant": avant,
+            "apres_disc": None,
+            "apres_seuils": None,
+            "apres_additionnel": None,
+        }
         self._update_compteurs_labels(nom)
 
     def _reset_defauts(self):
@@ -384,6 +522,56 @@ class PageFiltrage(QWidget):
         else:
             self.lbl_apres_seuils.setText("Après filtre seuils         :  —  (non appliqué)")
 
+        apres_add = cpt.get("apres_additionnel")
+        if apres_add is not None and avant:
+            pct = 100.0 * apres_add / avant
+            self.lbl_apres_additionnel.setText(
+                f"Après filtres additionnels  :  {apres_add} lignes valides  "
+                f"(−{avant - apres_add}  soit {100 - pct:.1f}% perdues vs. initial)"
+            )
+        else:
+            self.lbl_apres_additionnel.setText(
+                "Après filtres additionnels  :  —  (non appliqué)"
+            )
+
+    # ── Filtres additionnels ───────────────────────────────────────────────────
+
+    def _colonnes_disponibles(self) -> list:
+        nom = self.combo.currentText()
+        df = self.fichiers.get(nom)
+        if df is None:
+            return []
+        return [c for c in df.columns if c != COL_TEMPS]
+
+    def _actualiser_colonnes_filtres(self):
+        cols = self._colonnes_disponibles()
+        for widget in self._filtres_lignes:
+            widget.actualiser_colonnes(cols)
+
+    def _ajouter_filtre_additionnel(self):
+        cols = self._colonnes_disponibles()
+        widget = FiltreLigneWidget(cols, self._supprimer_filtre_additionnel)
+        self._filtres_lignes.append(widget)
+        self._filtres_layout.addWidget(widget)
+
+    def _supprimer_filtre_additionnel(self, widget: FiltreLigneWidget):
+        if widget in self._filtres_lignes:
+            self._filtres_lignes.remove(widget)
+            self._filtres_layout.removeWidget(widget)
+            widget.deleteLater()
+
+    def _appliquer_filtres_additionnels(self):
+        nom = self.combo.currentText()
+        df = self.fichiers.get(nom)
+        if df is None or not self._filtres_lignes:
+            return
+        self._snapshot_si_nouveau(nom)
+        filtres = [w.config() for w in self._filtres_lignes]
+        df_filtre = appliquer_filtres_additionnels(df, filtres)
+        self.fichiers[nom] = df_filtre
+        self._compteurs[nom]["apres_additionnel"] = compter_lignes_valides(df_filtre)
+        self._update_compteurs_labels(nom)
+
     # ── Graphique Moyenne ──────────────────────────────────────────────────────
 
     def _on_tab_change(self, index: int):
@@ -424,6 +612,7 @@ class PageFiltrage(QWidget):
                     ("Dernières 4'",  res['last4'],         '#4f8ef7'),
                     ("Stable VO2",    res.get('stable_vo2'),   '#27ae60'),
                     ("Stable PetO2",  res.get('stable_peto2'), '#f39c12'),
+                    ("VO2 mini 4'",   res.get('vo2_min'),      '#9b59b6'),
                 ]
                 for label, periode, color in SPANS:
                     if periode is None:
@@ -444,10 +633,10 @@ class PageFiltrage(QWidget):
                 vo2_lisse = vo2_lisse.round(2)
                 self.ax_vo2.plot(x, vo2,
                                  color=(180/255, 50/255, 50/255),
-                                 linewidth=1, label="VO2", zorder=2)
+                                 linewidth=1, label="VO2 (L)", zorder=2)
                 self.ax_vo2.plot(x, vo2_lisse,
                                  color=(180/255, 55/255, 55/255),
-                                 linewidth=2, label="VO2 lissé", zorder=2)
+                                 linewidth=2, label="VO2 (L) lissé", zorder=2)
 
             if "Q.R." in df.columns:
                 qr = pd.to_numeric(df["Q.R."], errors="coerce")
@@ -469,6 +658,22 @@ class PageFiltrage(QWidget):
         self._style_axes_moyenne()
         self.canvas_moy.draw()
         self._mettre_a_jour_tableau_moyennes(res)
+
+    def _envoyer_resume(self):
+        nom = self.combo_moy.currentText()
+        df = self.fichiers.get(nom)
+        if df is None or df.empty:
+            return
+        res = calculer_moyennes(df)
+        if res is None:
+            self.lbl_resume_statut.setStyleSheet("font-size: 12px; color: #e05c3a;")
+            self.lbl_resume_statut.setText("Impossible d'envoyer (colonne F.R. manquante).")
+            QTimer.singleShot(4000, lambda: self.lbl_resume_statut.setText(""))
+            return
+        self.resume_data[nom] = res
+        self.lbl_resume_statut.setStyleSheet("font-size: 12px; color: #27ae60;")
+        self.lbl_resume_statut.setText(f"✓ « {nom} » envoyé au résumé.")
+        QTimer.singleShot(4000, lambda: self.lbl_resume_statut.setText(""))
 
     def _mettre_a_jour_tableau_moyennes(self, res=None):
         nom = self.combo_moy.currentText()
@@ -511,6 +716,12 @@ class PageFiltrage(QWidget):
                 f"Stable PetO2  : lignes {sp['debut']}–{sp['fin']}  "
                 f"({_temps(sp['debut'])} → {_temps(sp['fin'] - 1)})"
             )
+        if res.get('vo2_min'):
+            vm = res['vo2_min']
+            info_lines.append(
+                f"VO2 mini 4'   : lignes {vm['debut']}–{vm['fin']}  "
+                f"({_temps(vm['debut'])} → {_temps(vm['fin'] - 1)})"
+            )
         self.lbl_moy_info.setText("\n".join(info_lines))
 
         # Construction du tableau
@@ -519,6 +730,7 @@ class PageFiltrage(QWidget):
             ("Dernières 4'", res['last4']),
             ("Stable VO2",   res['stable_vo2']),
             ("Stable PetO2", res['stable_peto2']),
+            ("VO2 mini 4'",  res.get('vo2_min')),
         ]
         periodes = [(lbl, p) for lbl, p in periodes if p is not None]
 
@@ -550,7 +762,7 @@ class PageFiltrage(QWidget):
         self.ax_vo2.set_facecolor("white")
         self.ax_vo2.set_title("VO2 et QR", fontsize=12, color="#2b2d3b", pad=8)
         self.ax_vo2.set_xlabel("Temps", fontsize=9, color="#555555")
-        self.ax_vo2.set_ylabel("VO2", fontsize=9, color=(180/255, 50/255, 50/255))
+        self.ax_vo2.set_ylabel("VO2 (L)", fontsize=9, color=(180/255, 50/255, 50/255))
         self.ax_vo2.set_ylim(0, 0.6)
         self.ax_vo2.tick_params(colors="#555555", labelsize=8)
         self.ax_vo2.grid(True, alpha=0.3, linestyle="--")

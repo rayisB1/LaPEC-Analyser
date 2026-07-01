@@ -85,6 +85,43 @@ def appliquer_filtre_seuils(
     return result
 
 
+def appliquer_filtres_additionnels(df: pd.DataFrame, filtres: list) -> pd.DataFrame:
+    """
+    Applique une liste de filtres personnalisés définis par l'utilisateur.
+    Chaque élément de `filtres` est un dict :
+      {'type': 'disc',  'col': str, 'seuil': float}
+      {'type': 'seuil', 'col': str, 'min': float, 'max': float}
+    Une ligne qui échoue à n'importe quel filtre a toutes ses colonnes (hors Temps) vidées.
+    """
+    if not filtres:
+        return df.copy()
+    result = df.copy()
+    a_vider = _cols_a_vider(result)
+
+    for f in filtres:
+        col = f.get('col', '')
+        if not col or col not in result.columns:
+            continue
+        serie = pd.to_numeric(result[col], errors='coerce')
+
+        if f.get('type') == 'disc':
+            diff = serie.diff().abs()
+            mask = diff > f.get('seuil', 0.0)
+            if len(result) > 0:
+                mask.iloc[0] = False
+            result.loc[mask, a_vider] = None
+
+        elif f.get('type') == 'seuil':
+            mask = pd.Series(False, index=result.index)
+            if f.get('min') is not None:
+                mask |= serie < f['min']
+            if f.get('max') is not None:
+                mask |= serie > f['max']
+            result.loc[mask, a_vider] = None
+
+    return result
+
+
 def compter_lignes_valides(df: pd.DataFrame) -> int:
     """
     Compte les lignes non-vidées : au moins une valeur non-nulle

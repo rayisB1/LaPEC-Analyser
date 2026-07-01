@@ -9,6 +9,8 @@ from src.ui.page_import import PageImport
 from src.ui.page_filtrage import PageFiltrage
 from src.ui.page_parametres import PageParametres
 from src.ui.page_visualiser import PageVisualiser
+from src.ui.page_resume import PageResume
+from src.ui.page_notes import PageNotes
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -42,8 +44,9 @@ class MainWindow(QMainWindow):
             ("Importer", 0),
             ("Visualiser", 1),
             ("Filtrage et Moyenne", 2),
-            ("Paramètres", 3),
-            ("Résumé", 4),
+            ("Résumé", 3),
+            ("Notes", 4),
+            ("Paramètres", 5),
         ]
 
         for label, index in nav_items:
@@ -79,12 +82,15 @@ class MainWindow(QMainWindow):
         self.stack = QStackedWidget()
         self.stack.setStyleSheet("background-color: #f5f5f5; color: #2b2d3b;")
 
+        self.resume_data = {}  # nom -> résultat calculer_moyennes
+
         self.page_import = PageImport()
         self.stack.addWidget(self.page_import)
         self.stack.addWidget(PageVisualiser(self.page_import.fichiers))
-        self.stack.addWidget(PageFiltrage(self.page_import.fichiers))
+        self.stack.addWidget(PageFiltrage(self.page_import.fichiers, self.resume_data))
+        self.stack.addWidget(PageResume(self.resume_data))
+        self.stack.addWidget(PageNotes())
         self.stack.addWidget(PageParametres())
-        self.stack.addWidget(self._make_page("📊 Feuille de résumé"))
 
         root.addWidget(self.stack)
         self._navigate(0)
